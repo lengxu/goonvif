@@ -208,7 +208,7 @@ func discoverDevices(ip string, duration int, outputPath string, credsFile strin
 	devices, ok := data.Data.([]interface{})
 	if !ok {
 		conditionalPrintln(silent, "No devices found")
-		return
+		devices = []interface{}{} // Create empty slice for JSON output
 	}
 
 	conditionalPrintf(silent, "Found %d device(s):\n", len(devices))
@@ -266,7 +266,7 @@ func discoverDevices(ip string, duration int, outputPath string, credsFile strin
 		conditionalPrintf(silent, "\n✅ No obvious security vulnerabilities found\n")
 	}
 	
-	// Save to JSON file if output path provided
+	// Always save to JSON file if output path provided, even if no devices found
 	if outputPath != "" {
 		saveToJSON(devices, outputPath, silent)
 	}
