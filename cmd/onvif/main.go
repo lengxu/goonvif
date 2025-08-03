@@ -4,14 +4,23 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"bufio"
 
+	"github.com/lengxu/golicense/client"
 	onvif "github.com/quocson95/go-onvif"
 )
 
 func main() {
+	// 授权检查（仅校验，不生成req.dat）
+	fmt.Println("正在检查授权...")
+	if err := client.ValidateOnlyLicense("goonvif"); err != nil {
+		log.Fatalf("授权验证失败: %v", err)
+	}
+	fmt.Println("✅ 授权验证通过")
+
 	var (
 		command    = flag.String("cmd", "discover", "Command to execute: discover, info, media, ptz")
 		ip         = flag.String("ip", "", "Target IP address or network interface name")
