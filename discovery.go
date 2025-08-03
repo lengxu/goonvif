@@ -52,11 +52,11 @@ var weakCredentials = [][]string{
 	{"admin", "000000"},        // All zeros
 	{"service", "service"},     // Service account
 	{"operator", "operator"},   // Operator account
-	{"hikvision", "hikvision"}, // Hikvision default
+	{"admin", "abcd1234"},      // Hikvision default
 	{"dahua", "dahua"},         // Dahua default
 	{"uniview", "uniview"},     // Uniview default
 	{"admin", "9999"},          // Short PIN
-	{"admin", "1234"},          // Very short PIN
+	{"admin", "admin12345"},    // Very short PIN
 	{"viewer", "viewer"},       // Viewer account
 	{"admin", "12345678"},      // Long numeric password
 	{"admin", "123456789"},     // Longer numeric password
@@ -64,7 +64,63 @@ var weakCredentials = [][]string{
 	{"admin", "12345678901"},   // Longest numeric password
 	{"admin", "123456789012"},  // Longest numeric password
 	{"admin", "1234567890123"}, // Longest numeric password
-	{"admin", "Admin@123"},     // Longest numeric password
+	{"admin", "Admin@123"},
+	{"admin", "test!2345"},
+	{"admin", "1qaz2wsx"},
+	{"admin", "1qaz@WSX"},
+	{"admin", "!@#$QWER"},
+	{"admin", "p@ssword"},
+	{"admin", "passw0rd"},
+	{"admin", "p@ssw0rd"},
+	{"admin", "AbcD@1234"},
+	{"admin", "AbcD@12345"},
+	{"admin", "AbcD@123456"},
+	{"admin", "AbcD@1234567"},
+	{"admin", "AbcD@12345678"},
+	{"admin", "AbcD@123456789"},
+	{"admin", "AbcD@1234567890"},
+	{"admin", "Aa147258"},
+	{"admin", "Aa147258963"},
+	{"admin", "a88888888"},
+	{"admin", "nc070928"},
+	{"admin", "12345678a"},
+	{"admin", "1q2w3e4r"},
+	{"admin", "hik12345"},
+	{"admin", "hik12345+"},
+	{"admin", "Hik12345"},
+	{"admin", "Hik12345+"},
+	{"admin", "Hik12345-"},
+	{"admin", "Hik12345_"},
+	{"admin", "Hik12345."},
+	{"admin", "Hik12345,"},
+	{"admin", "hikang250"},
+	{"admin", "hikang250+"},
+	{"admin", "Hikang250"},
+	{"admin", "Hikang250+"},
+	{"admin", "Hikang250-"},
+	{"admin", "Hikang250_"},
+	{"admin", "Hikang250."},
+	{"admin", "a1234567"},
+	{"admin", "a12345678"},
+	{"admin", "a1b2C3d4"},
+	{"admin", "Huawei12#$"},
+	{"admin", "Huawei12#$+"},
+	{"admin", "Huawei12#$-"},
+	{"admin", "Huawei12#$_"},
+	{"admin", "Huawei12#$."},
+	{"admin", "Huawei12#$,"},
+	{"admin", "Huawei12#$"},
+	{"admin", "hkdsb250"},
+	{"admin", "Aa12345678"},
+	{"admin", "woaidahua147258"},
+	{"admin", "Aa159357"},
+	{"admin", "qwer2468"},
+	{"admin", "qtmdmm886"},
+	{"admin", "hk135790"},
+	{"admin", "adm45123"},
+	{"admin", "qwert12345"},
+	{"admin", "A987654321"},
+	{"admin", "Dsbhk428"},
 }
 
 // Additional credentials loaded from file
@@ -744,7 +800,7 @@ func enhanceDeviceInfo(device *Device) {
 	if device.IP != "" {
 		conditionalPrintf("[INFO] Testing RTSP capabilities for discovered device %s\n", device.IP)
 		testRTSPOnDiscoveredDevice(device)
-		
+
 		// Cross-protocol credential sharing
 		handleCredentialSharing(device)
 	}
@@ -843,7 +899,7 @@ func tryGetDeviceInformationDetailsAuth(device *Device, username, password strin
 
 		glog.V(2).Infof("Enhanced device info from authenticated GetDeviceInformation - Manufacturer: %s, Model: %s, Serial: %s",
 			device.Manufacturer, device.Model, device.SerialNumber)
-		conditionalPrintf("[SUCCESS] Retrieved detailed info: %s %s (Serial: %s, FW: %s)\n", 
+		conditionalPrintf("[SUCCESS] Retrieved detailed info: %s %s (Serial: %s, FW: %s)\n",
 			device.Manufacturer, device.Model, device.SerialNumber, device.FirmwareVersion)
 	}
 }
@@ -965,7 +1021,7 @@ func tryGetMACAddressAuth(device *Device, username, password string) {
 			"Envelope.Body.GetNetworkInterfacesResponse.NetworkInterfaces.Info.MACAddress",
 			"Envelope.Body.GetNetworkInterfacesResponse.NetworkInterfaces.MACAddress",
 		}
-		
+
 		for _, path := range macPaths {
 			if macAddr, _ := mapXML.ValueForPathString(path); macAddr != "" {
 				device.MACAddress = macAddr
@@ -973,7 +1029,7 @@ func tryGetMACAddressAuth(device *Device, username, password string) {
 				return
 			}
 		}
-		
+
 		// Log full response for debugging if verbose logging is enabled
 		glog.V(3).Infof("GetNetworkInterfaces response for debugging: %s", response)
 		glog.V(2).Infof("MAC address not found in any known paths for %s", device.XAddr)
@@ -1276,15 +1332,15 @@ func testWeakCredentials(device *Device) {
 				device.AuthStatus = "no_auth"
 				conditionalPrintf("[INFO] No authentication required for device %s\n", device.XAddr)
 			}
-			
+
 			// Now that we have working credentials, get detailed device information
 			conditionalPrintf("[INFO] Fetching detailed device information with authenticated access...\n")
 			tryGetDeviceInformationDetailsAuth(device, username, password)
 			tryGetMACAddressAuth(device, username, password)
-			
+
 			return
 		}
-		
+
 		// Add small delay between credential attempts to avoid overwhelming devices
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -1391,7 +1447,7 @@ func retryOnvifWithRTSPCreds(device *Device) {
 	if device.XAddr == "" || device.RTSPWorkingCreds == "" {
 		return
 	}
-	
+
 	// Parse RTSP credentials
 	parts := strings.Split(device.RTSPWorkingCreds, ":")
 	if len(parts) != 2 {
@@ -1399,13 +1455,13 @@ func retryOnvifWithRTSPCreds(device *Device) {
 	}
 	username := parts[0]
 	password := parts[1]
-	
+
 	// Test ONVIF authentication with RTSP credentials
 	if testAuthentication(device.XAddr, username, password) {
 		device.User = username
 		device.Password = password
 		device.WorkingCreds = device.RTSPWorkingCreds
-		
+
 		if isWeakCredential(username, password) {
 			device.AuthStatus = "weak_auth"
 			device.WeakPassword = true
@@ -1414,7 +1470,7 @@ func retryOnvifWithRTSPCreds(device *Device) {
 			device.AuthStatus = "no_auth"
 			conditionalPrintf("[SUCCESS] ONVIF no authentication required (verified with RTSP creds) for device %s\n", device.XAddr)
 		}
-		
+
 		// Now that we have working ONVIF credentials, try to get more detailed device information
 		conditionalPrintf("[INFO] Fetching detailed device information with authenticated access...\n")
 		tryGetDeviceInformationDetailsAuth(device, username, password)
@@ -1433,13 +1489,13 @@ func handleCredentialSharing(device *Device) {
 		conditionalPrintf("[INFO] Testing RTSP with ONVIF credentials: %s\n", device.WorkingCreds)
 		retryRTSPWithOnvifCreds(device)
 	}
-	
-	// Case 2: RTSP found credentials, ONVIF needs authentication  
+
+	// Case 2: RTSP found credentials, ONVIF needs authentication
 	if device.RTSPWorkingCreds != "" && device.AuthStatus == "auth_required" {
 		conditionalPrintf("[INFO] Retrying ONVIF authentication with RTSP credentials: %s\n", device.RTSPWorkingCreds)
 		retryOnvifWithRTSPCreds(device)
 	}
-	
+
 	// Case 3: Both protocols found different credentials - log for analysis
 	if device.WorkingCreds != "" && device.RTSPWorkingCreds != "" && device.WorkingCreds != device.RTSPWorkingCreds {
 		conditionalPrintf("[INFO] Different credentials found - ONVIF: %s, RTSP: %s\n", device.WorkingCreds, device.RTSPWorkingCreds)
@@ -1451,7 +1507,7 @@ func retryRTSPWithOnvifCreds(device *Device) {
 	if device.WorkingCreds == "" || device.IP == "" {
 		return
 	}
-	
+
 	// Parse ONVIF credentials
 	parts := strings.Split(device.WorkingCreds, ":")
 	if len(parts) != 2 {
@@ -1459,10 +1515,10 @@ func retryRTSPWithOnvifCreds(device *Device) {
 	}
 	username := parts[0]
 	password := parts[1]
-	
+
 	// Test common RTSP ports with ONVIF credentials
 	rtspPorts := []int{554, 8554, 1935, 8935}
-	
+
 	for _, port := range rtspPorts {
 		// Quick TCP connection test first
 		address := fmt.Sprintf("%s:%d", device.IP, port)
@@ -1471,19 +1527,19 @@ func retryRTSPWithOnvifCreds(device *Device) {
 			continue
 		}
 		conn.Close()
-		
+
 		// Test RTSP authentication with ONVIF credentials
 		streamPaths := []string{
 			"/", "/live", "/stream", "/stream1", "/stream2",
 			"/ch01", "/ch1", "/channel1", "/main", "/sub",
-			"/cam/realmonitor?channel=1&subtype=0",  // Dahua format
-			"/Streaming/Channels/101",               // Hikvision format
+			"/cam/realmonitor?channel=1&subtype=0", // Dahua format
+			"/Streaming/Channels/101",              // Hikvision format
 		}
-		
+
 		if workingStreams := testRTSPCredentials(device.IP, port, username, password, streamPaths); len(workingStreams) > 0 {
 			device.RTSPWorkingCreds = device.WorkingCreds
 			device.RTSPStreams = workingStreams
-			
+
 			if isWeakCredential(username, password) {
 				device.RTSPAuthStatus = "weak_auth"
 				device.RTSPWeakPassword = true
@@ -1493,7 +1549,7 @@ func retryRTSPWithOnvifCreds(device *Device) {
 				device.RTSPAuthStatus = "no_auth"
 				conditionalPrintf("[SUCCESS] RTSP no authentication required (verified with ONVIF creds) for %s:%d\n", device.IP, port)
 			}
-			
+
 			// Mark RTSP capability and service
 			if device.Capabilities == nil {
 				device.Capabilities = make(map[string]bool)
@@ -1503,11 +1559,11 @@ func retryRTSPWithOnvifCreds(device *Device) {
 			}
 			device.Capabilities["RTSP"] = true
 			device.Services["RTSP"] = fmt.Sprintf("rtsp://%s:%d", device.IP, port)
-			
+
 			return // Found working RTSP, no need to test other ports
 		}
 	}
-	
+
 	// If we reach here, ONVIF credentials didn't work for RTSP
 	conditionalPrintf("[INFO] ONVIF credentials did not work for RTSP authentication on %s\n", device.IP)
 }
