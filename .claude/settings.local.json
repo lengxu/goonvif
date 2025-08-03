@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod:*)",
+      "Bash(./build.sh)",
+      "Bash(mkdir:*)",
+      "Bash(mv:*)",
+      "Bash(./build/onvif_local:*)",
+      "Bash(go build)",
+      "Bash(go test)",
+      "Bash(go test:*)",
+      "Bash(rm test_discovery.go discovery_test_new.go)",
+      "Bash(go run:*)",
+      "Bash(timeout 20s go run main.go)",
+      "Bash(timeout:*)",
+      "Bash(git checkout:*)",
+      "Bash(go build:*)",
+      "Bash(./onvif -help)",
+      "Bash(rm test_creds.go)",
+      "Bash(rm discovery_test_new.go)"
+    ],
+    "deny": []
+  }
+}
