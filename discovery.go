@@ -931,6 +931,55 @@ func tryGetMACAddress(device *Device) {
 	}
 }
 
+// tryGetMACAddressAuth attempts to get MAC address from network interfaces using authentication
+func tryGetMACAddressAuth(device *Device, username, password string) {
+	if device.XAddr == "" || device.MACAddress != "" {
+		return
+	}
+
+	// Create GetNetworkInterfaces SOAP request
+	soapRequest := `<?xml version="1.0" encoding="UTF-8"?>
+	<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">
+		<s:Body>
+			<tds:GetNetworkInterfaces xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/>
+		</s:Body>
+	</s:Envelope>`
+
+	response, err := makeAuthenticatedSOAPRequest(device.XAddr, soapRequest, "http://www.onvif.org/ver10/device/wsdl/GetNetworkInterfaces", username, password)
+	if err != nil {
+		glog.V(2).Infof("Failed to get network interfaces with auth from %s: %v", device.XAddr, err)
+		return
+	}
+
+	// Parse response to extract MAC address
+	if mapXML, err := mxj.NewMapXml([]byte(response)); err == nil {
+		// Try multiple possible paths for MAC address based on common ONVIF implementations
+		macPaths := []string{
+			"Envelope.Body.GetNetworkInterfacesResponse.NetworkInterfaces.Info.HwAddress",
+			"Envelope.Body.GetNetworkInterfacesResponse.NetworkInterfaces.0.Info.HwAddress",
+			"Envelope.Body.GetNetworkInterfacesResponse.NetworkInterfaces.Info.0.HwAddress",
+			"Envelope.Body.GetNetworkInterfacesResponse.NetworkInterfaces.Info.HardwareAddress",
+			"Envelope.Body.GetNetworkInterfacesResponse.NetworkInterfaces.HwAddress",
+			"Envelope.Body.GetNetworkInterfacesResponse.NetworkInterfaces.0.HwAddress",
+			// Hikvision specific paths
+			"Envelope.Body.GetNetworkInterfacesResponse.NetworkInterfaces.Info.MACAddress",
+			"Envelope.Body.GetNetworkInterfacesResponse.NetworkInterfaces.MACAddress",
+		}
+		
+		for _, path := range macPaths {
+			if macAddr, _ := mapXML.ValueForPathString(path); macAddr != "" {
+				device.MACAddress = macAddr
+				glog.V(2).Infof("Enhanced device info from authenticated GetNetworkInterfaces - MAC: %s (path: %s)", device.MACAddress, path)
+				return
+			}
+		}
+		
+		// Log full response for debugging if verbose logging is enabled
+		glog.V(3).Infof("GetNetworkInterfaces response for debugging: %s", response)
+		glog.V(2).Infof("MAC address not found in any known paths for %s", device.XAddr)
+	}
+}
+
 // tryGetHostname attempts to get hostname information
 func tryGetHostname(device *Device) {
 	if device.XAddr == "" {
@@ -1231,6 +1280,7 @@ func testWeakCredentials(device *Device) {
 			// Now that we have working credentials, get detailed device information
 			conditionalPrintf("[INFO] Fetching detailed device information with authenticated access...\n")
 			tryGetDeviceInformationDetailsAuth(device, username, password)
+			tryGetMACAddressAuth(device, username, password)
 			
 			return
 		}
@@ -1368,10 +1418,10 @@ func retryOnvifWithRTSPCreds(device *Device) {
 		// Now that we have working ONVIF credentials, try to get more detailed device information
 		conditionalPrintf("[INFO] Fetching detailed device information with authenticated access...\n")
 		tryGetDeviceInformationDetailsAuth(device, username, password)
+		tryGetMACAddressAuth(device, username, password)
 		// For now, just try the regular versions since we have working credentials
 		// TODO: Implement authenticated versions if needed
 		tryGetRawScopes(device)
-		tryGetMACAddress(device)
 		tryGetHostname(device)
 	}
 }
