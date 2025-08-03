@@ -23,8 +23,18 @@ func main() {
 		credsFile  = flag.String("creds", "", "Custom credentials file (username:password per line)")
 		help       = flag.Bool("help", false, "Show help information")
 	)
+	
+	// Global variable to control silent mode when outputting to file
+	var silentMode bool
 
 	flag.Parse()
+	
+	// Enable silent mode if output file is specified
+	if *output != "" {
+		silentMode = true
+		// Set silent mode for discovery operations
+		onvif.SetDiscoverySilent(true)
+	}
 
 	if *help {
 		showHelp()
@@ -37,7 +47,7 @@ func main() {
 			fmt.Println("Error: IP address, CIDR subnet, or interface name required for discovery")
 			os.Exit(1)
 		}
-		discoverDevices(*ip, *duration, *output, *credsFile)
+		discoverDevices(*ip, *duration, *output, *credsFile, silentMode)
 
 	case "info":
 		if *host == "" {
@@ -86,7 +96,7 @@ func showHelp() {
 	fmt.Println("  -user string     Username (default: admin)")
 	fmt.Println("  -pass string     Password (default: admin)")
 	fmt.Println("  -timeout int     Discovery timeout in ms (default: 3000)")
-	fmt.Println("  -output string   Output file path for JSON results (optional)")
+	fmt.Println("  -output string   Output file path for JSON results (silent mode - no console output)")
 	fmt.Println("  -creds string    Custom credentials file path (username:password per line)")
 	fmt.Println("  -help            Show this help")
 	fmt.Println("")
@@ -97,10 +107,10 @@ func showHelp() {
 	fmt.Println("  # Use custom credentials file for weak password testing")
 	fmt.Println("  onvif -cmd discover -ip 192.168.1.0/24 -creds my_passwords.txt")
 	fmt.Println("")
-	fmt.Println("  # Auto-discover with all methods and save comprehensive results")
+	fmt.Println("  # Auto-discover with all methods and save comprehensive results (silent mode)")
 	fmt.Println("  onvif -cmd discover -ip auto -timeout 15000 -output full_scan.json")
 	fmt.Println("")
-	fmt.Println("  # Targeted network scan with security analysis")
+	fmt.Println("  # Targeted network scan with security analysis (silent mode)")
 	fmt.Println("  onvif -cmd discover -ip 10.0.0.0/16 -output security_audit.json")
 	fmt.Println("")
 	fmt.Println("Discovery Methods:")
@@ -131,7 +141,21 @@ func showHelp() {
 	fmt.Println("  onvif -cmd media -host http://192.168.1.100/onvif/device_service -user admin -pass 123456")
 }
 
-func discoverDevices(ip string, duration int, outputPath string, credsFile string) {
+// conditionalPrintf prints to console only if not in silent mode
+func conditionalPrintf(silent bool, format string, args ...interface{}) {
+	if !silent {
+		fmt.Printf(format, args...)
+	}
+}
+
+// conditionalPrintln prints to console only if not in silent mode
+func conditionalPrintln(silent bool, args ...interface{}) {
+	if !silent {
+		fmt.Println(args...)
+	}
+}
+
+func discoverDevices(ip string, duration int, outputPath string, credsFile string, silent bool) {
 	var ipType string
 	if strings.Contains(ip, "/") {
 		ipType = "CIDR subnet"
@@ -141,15 +165,15 @@ func discoverDevices(ip string, duration int, outputPath string, credsFile strin
 		ipType = "interface"
 	}
 	
-	fmt.Printf("Discovering ONVIF devices on %s %s (timeout: %dms)...\n", ipType, ip, duration)
-	fmt.Printf("Security scan enabled: Testing for weak credentials...\n")
+	conditionalPrintf(silent, "Discovering ONVIF devices on %s %s (timeout: %dms)...\n", ipType, ip, duration)
+	conditionalPrintf(silent, "Security scan enabled: Testing for weak credentials...\n")
 	
 	// Load custom credentials if file provided
 	if credsFile != "" {
 		if err := loadCustomCredentials(credsFile); err != nil {
-			fmt.Printf("Warning: Failed to load credentials file %s: %v\n", credsFile, err)
+			conditionalPrintf(silent, "Warning: Failed to load credentials file %s: %v\n", credsFile, err)
 		} else {
-			fmt.Printf("Loaded custom credentials from: %s\n", credsFile)
+			conditionalPrintf(silent, "Loaded custom credentials from: %s\n", credsFile)
 		}
 	}
 	
@@ -163,22 +187,22 @@ func discoverDevices(ip string, duration int, outputPath string, credsFile strin
 
 	var data onvif.OnvifData
 	if err := json.Unmarshal([]byte(result), &data); err != nil {
-		fmt.Printf("Error parsing discovery result: %v\n", err)
+		conditionalPrintf(silent, "Error parsing discovery result: %v\n", err)
 		return
 	}
 
 	if data.Error != "" {
-		fmt.Printf("Discovery error: %s\n", data.Error)
+		conditionalPrintf(silent, "Discovery error: %s\n", data.Error)
 		return
 	}
 
 	devices, ok := data.Data.([]interface{})
 	if !ok {
-		fmt.Println("No devices found")
+		conditionalPrintln(silent, "No devices found")
 		return
 	}
 
-	fmt.Printf("Found %d device(s):\n", len(devices))
+	conditionalPrintf(silent, "Found %d device(s):\n", len(devices))
 	
 	// Print summary and security analysis
 	weakDevices := 0
@@ -188,7 +212,7 @@ func discoverDevices(ip string, duration int, outputPath string, credsFile strin
 	
 	for i, device := range devices {
 		deviceJSON, _ := json.MarshalIndent(device, "", "  ")
-		fmt.Printf("Device %d:\n%s\n\n", i+1, string(deviceJSON))
+		conditionalPrintf(silent, "Device %d:\n%s\n\n", i+1, string(deviceJSON))
 		
 		// Count security issues
 		if deviceMap, ok := device.(map[string]interface{}); ok {
@@ -215,32 +239,32 @@ func discoverDevices(ip string, duration int, outputPath string, credsFile strin
 	}
 	
 	// Print comprehensive security summary
-	fmt.Printf("\n=== COMPREHENSIVE SECURITY SUMMARY ===\n")
-	fmt.Printf("Total devices found: %d\n", len(devices))
-	fmt.Printf("\nONVIF Security:\n")
-	fmt.Printf("  Devices with weak ONVIF credentials: %d\n", weakDevices)
-	fmt.Printf("  Devices with no ONVIF authentication: %d\n", noAuthDevices)
-	fmt.Printf("\nRTSP Security:\n")
-	fmt.Printf("  Devices with weak RTSP credentials: %d\n", rtspWeakDevices)
-	fmt.Printf("  Devices with no RTSP authentication: %d\n", rtspNoAuthDevices)
+	conditionalPrintf(silent, "\n=== COMPREHENSIVE SECURITY SUMMARY ===\n")
+	conditionalPrintf(silent, "Total devices found: %d\n", len(devices))
+	conditionalPrintf(silent, "\nONVIF Security:\n")
+	conditionalPrintf(silent, "  Devices with weak ONVIF credentials: %d\n", weakDevices)
+	conditionalPrintf(silent, "  Devices with no ONVIF authentication: %d\n", noAuthDevices)
+	conditionalPrintf(silent, "\nRTSP Security:\n")
+	conditionalPrintf(silent, "  Devices with weak RTSP credentials: %d\n", rtspWeakDevices)
+	conditionalPrintf(silent, "  Devices with no RTSP authentication: %d\n", rtspNoAuthDevices)
 	
 	totalVulnerable := weakDevices + noAuthDevices + rtspWeakDevices + rtspNoAuthDevices
 	if totalVulnerable > 0 {
-		fmt.Printf("\n⚠️  CRITICAL: %d protocol vulnerabilities found across devices!\n", totalVulnerable)
-		fmt.Printf("   - ONVIF vulnerabilities: %d\n", weakDevices+noAuthDevices)
-		fmt.Printf("   - RTSP vulnerabilities: %d\n", rtspWeakDevices+rtspNoAuthDevices)
+		conditionalPrintf(silent, "\n⚠️  CRITICAL: %d protocol vulnerabilities found across devices!\n", totalVulnerable)
+		conditionalPrintf(silent, "   - ONVIF vulnerabilities: %d\n", weakDevices+noAuthDevices)
+		conditionalPrintf(silent, "   - RTSP vulnerabilities: %d\n", rtspWeakDevices+rtspNoAuthDevices)
 	} else {
-		fmt.Printf("\n✅ No obvious security vulnerabilities found\n")
+		conditionalPrintf(silent, "\n✅ No obvious security vulnerabilities found\n")
 	}
 	
 	// Save to JSON file if output path provided
 	if outputPath != "" {
-		saveToJSON(devices, outputPath)
+		saveToJSON(devices, outputPath, silent)
 	}
 }
 
 // saveToJSON saves the device list to a JSON file
-func saveToJSON(devices []interface{}, filepath string) {
+func saveToJSON(devices []interface{}, filepath string, silent bool) {
 	// Create enhanced output structure
 	output := map[string]interface{}{
 		"scan_time":    fmt.Sprintf("%v", strings.Split(fmt.Sprintf("%v", os.Args), " ")),
@@ -305,17 +329,17 @@ func saveToJSON(devices []interface{}, filepath string) {
 	
 	jsonData, err := json.MarshalIndent(output, "", "  ")
 	if err != nil {
-		fmt.Printf("Error marshaling JSON: %v\n", err)
+		conditionalPrintf(silent, "Error marshaling JSON: %v\n", err)
 		return
 	}
 	
 	err = os.WriteFile(filepath, jsonData, 0644)
 	if err != nil {
-		fmt.Printf("Error writing to file %s: %v\n", filepath, err)
+		conditionalPrintf(silent, "Error writing to file %s: %v\n", filepath, err)
 		return
 	}
 	
-	fmt.Printf("\n📄 Results saved to: %s\n", filepath)
+	conditionalPrintf(silent, "\n📄 Results saved to: %s\n", filepath)
 }
 
 // countCriticalDevices counts devices with both ONVIF and RTSP vulnerabilities

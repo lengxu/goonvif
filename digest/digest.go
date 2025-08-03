@@ -44,6 +44,7 @@
 package digest
 
 import (
+	"bytes"
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/tls"
@@ -252,12 +253,29 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, ErrNilTransport
 	}
 
+	// Read and store the request body data first
+	var bodyData []byte
+	if req.Body != nil {
+		var err error
+		bodyData, err = ioutil.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		req.Body.Close()
+	}
+
 	// Copy the request so we don't modify the input.
 	req2 := new(http.Request)
 	*req2 = *req
 	req2.Header = make(http.Header)
 	for k, s := range req.Header {
 		req2.Header[k] = s
+	}
+
+	// Restore body for first request
+	if bodyData != nil {
+		req.Body = ioutil.NopCloser(bytes.NewReader(bodyData))
+		req.ContentLength = int64(len(bodyData))
 	}
 
 	// Make a request to get the 401 that contains the challenge.
@@ -286,6 +304,12 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	// We'll no longer use the initial response, so close it
 	resp.Body.Close()
+
+	// Restore body for second authenticated request
+	if bodyData != nil {
+		req2.Body = ioutil.NopCloser(bytes.NewReader(bodyData))
+		req2.ContentLength = int64(len(bodyData))
+	}
 
 	// Make authenticated request.
 	req2.Header.Set("Authorization", auth)

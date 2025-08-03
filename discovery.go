@@ -1,6 +1,7 @@
 package onvif
 
 import (
+	"bytes"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -69,9 +70,24 @@ var weakCredentials = [][]string{
 // Additional credentials loaded from file
 var additionalCredentials [][]string
 
+// Global variable to control silent mode for discovery operations
+var discoverySilent bool
+
 // SetCustomCredentials allows setting additional credentials from external source
 func SetCustomCredentials(creds [][]string) {
 	additionalCredentials = creds
+}
+
+// SetDiscoverySilent sets the silent mode for discovery operations
+func SetDiscoverySilent(silent bool) {
+	discoverySilent = silent
+}
+
+// conditionalPrintf prints to console only if not in silent mode
+func conditionalPrintf(format string, args ...interface{}) {
+	if !discoverySilent {
+		fmt.Printf(format, args...)
+	}
 }
 
 // getAllCredentials returns combined built-in and custom credentials
@@ -125,11 +141,11 @@ func StartDiscoveryOnCIDR(cidr string, duration time.Duration) ([]Device, error)
 
 	if isLocal {
 		// Use WS-Discovery for local networks (faster)
-		fmt.Printf("[INFO] Using WS-Discovery for local network: %s\n", cidr)
+		//fmt.Printf("[INFO] Using WS-Discovery for local network: %s\n", cidr)
 		return LocalNetworkDiscovery(cidr, duration)
 	} else {
 		// Use TCP scanning for cross-network discovery
-		fmt.Printf("[INFO] Using TCP scanning for cross-network: %s\n", cidr)
+		//fmt.Printf("[INFO] Using TCP scanning for cross-network: %s\n", cidr)
 		return CrossNetworkDiscovery(cidr, duration)
 	}
 }
@@ -176,8 +192,8 @@ func CrossNetworkDiscovery(cidr string, duration time.Duration) ([]Device, error
 	// Get all IPs in the CIDR range
 	ips := getIPsFromCIDR(ipNet)
 
-	// Create a channel to limit concurrent scans
-	maxConcurrent := 100
+	// Create a channel to limit concurrent scans (reduced for stability)
+	maxConcurrent := 20
 	sem := make(chan struct{}, maxConcurrent)
 
 	for _, ip := range ips {
@@ -207,7 +223,7 @@ func scanOnvifDevice(ip string, timeout time.Duration) (Device, bool) {
 	if err == nil && len(devices) > 0 {
 		device := devices[0]
 		enhanceDeviceInfo(&device)
-		fmt.Printf("[SUCCESS] Found device via unicast WS-Discovery: %s (Manufacturer: %s, Model: %s)\n",
+		conditionalPrintf("[SUCCESS] Found device via unicast WS-Discovery: %s (Manufacturer: %s, Model: %s)\n",
 			device.Name, device.Manufacturer, device.Model)
 		return device, true
 	}
@@ -228,7 +244,7 @@ func scanOnvifDevice(ip string, timeout time.Duration) (Device, bool) {
 		device, found := detectOnvifByHTTP(ip, port, timeout/5)
 		if found {
 			enhanceDeviceInfoCrossNetwork(&device, ip, port)
-			fmt.Printf("[SUCCESS] Found device via HTTP scanning: %s at %s:%d\n", device.Name, ip, port)
+			conditionalPrintf("[SUCCESS] Found device via HTTP scanning: %s at %s:%d\n", device.Name, ip, port)
 			return device, true
 		}
 	}
@@ -339,7 +355,7 @@ func discoverDevicesUnicast(targetIP string, duration time.Duration) ([]Device, 
 		return []Device{}, err
 	}
 
-	fmt.Printf("[SUCCESS] Unicast WS-Discovery successful on %s\n", targetIP)
+	//fmt.Printf("[SUCCESS] Unicast WS-Discovery successful on %s\n", targetIP)
 	return []Device{device}, nil
 }
 
@@ -560,7 +576,7 @@ func readDiscoveryResponse(messageID string, buffer []byte) (Device, error) {
 	glog.V(2).Infof("After parsing WS-Discovery scopes - Manufacturer: %s, Model: %s, MAC: %s, Hardware: %s",
 		manufacturer, model, macAddress, hardwareID)
 
-	fmt.Printf("[SUCCESS] WS-Discovery device parsed - Name: %s, Manufacturer: %s, Model: %s, MAC: %s\n",
+	conditionalPrintf("[SUCCESS] WS-Discovery device parsed - Name: %s, Manufacturer: %s, Model: %s, MAC: %s\n",
 		deviceName, manufacturer, model, macAddress)
 
 	return result, nil
@@ -726,8 +742,11 @@ func enhanceDeviceInfo(device *Device) {
 
 	// Test RTSP authentication on the same device
 	if device.IP != "" {
-		fmt.Printf("[INFO] Testing RTSP capabilities for discovered device %s\n", device.IP)
+		conditionalPrintf("[INFO] Testing RTSP capabilities for discovered device %s\n", device.IP)
 		testRTSPOnDiscoveredDevice(device)
+		
+		// Cross-protocol credential sharing
+		handleCredentialSharing(device)
 	}
 
 	// Ensure we have basic info
@@ -781,6 +800,51 @@ func tryGetDeviceInformationDetails(device *Device) {
 
 		glog.V(2).Infof("Enhanced device info from GetDeviceInformation - Manufacturer: %s, Model: %s, Serial: %s",
 			device.Manufacturer, device.Model, device.SerialNumber)
+	}
+}
+
+// tryGetDeviceInformationDetailsAuth attempts to get detailed device information via authenticated SOAP
+func tryGetDeviceInformationDetailsAuth(device *Device, username, password string) {
+	if device.XAddr == "" {
+		return
+	}
+
+	// Create GetDeviceInformation SOAP request
+	soapRequest := `<?xml version="1.0" encoding="UTF-8"?>
+	<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">
+		<s:Body>
+			<tds:GetDeviceInformation xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/>
+		</s:Body>
+	</s:Envelope>`
+
+	response, err := makeAuthenticatedSOAPRequest(device.XAddr, soapRequest, "http://www.onvif.org/ver10/device/wsdl/GetDeviceInformation", username, password)
+	if err != nil {
+		glog.V(2).Infof("Failed to get authenticated device information from %s: %v", device.XAddr, err)
+		return
+	}
+
+	// Parse response to extract device information
+	if mapXML, err := mxj.NewMapXml([]byte(response)); err == nil {
+		if manufacturer, _ := mapXML.ValueForPathString("Envelope.Body.GetDeviceInformationResponse.Manufacturer"); manufacturer != "" {
+			device.Manufacturer = manufacturer
+		}
+		if model, _ := mapXML.ValueForPathString("Envelope.Body.GetDeviceInformationResponse.Model"); model != "" {
+			device.Model = model
+		}
+		if serialNumber, _ := mapXML.ValueForPathString("Envelope.Body.GetDeviceInformationResponse.SerialNumber"); serialNumber != "" {
+			device.SerialNumber = serialNumber
+		}
+		if hardwareId, _ := mapXML.ValueForPathString("Envelope.Body.GetDeviceInformationResponse.HardwareId"); hardwareId != "" {
+			device.HardwareID = hardwareId
+		}
+		if firmwareVersion, _ := mapXML.ValueForPathString("Envelope.Body.GetDeviceInformationResponse.FirmwareVersion"); firmwareVersion != "" {
+			device.FirmwareVersion = firmwareVersion
+		}
+
+		glog.V(2).Infof("Enhanced device info from authenticated GetDeviceInformation - Manufacturer: %s, Model: %s, Serial: %s",
+			device.Manufacturer, device.Model, device.SerialNumber)
+		conditionalPrintf("[SUCCESS] Retrieved detailed info: %s %s (Serial: %s, FW: %s)\n", 
+			device.Manufacturer, device.Model, device.SerialNumber, device.FirmwareVersion)
 	}
 }
 
@@ -974,6 +1038,44 @@ func makeSOAPRequest(endpoint, soapBody, soapAction string) (string, error) {
 	return string(body), nil
 }
 
+// makeAuthenticatedSOAPRequest makes a SOAP request with digest authentication
+func makeAuthenticatedSOAPRequest(endpoint, soapBody, soapAction, username, password string) (string, error) {
+	// Create digest transport with credentials
+	transport := onvifDigest.NewTransport(username, password)
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   10 * time.Second,
+	}
+
+	// Create request with reusable body
+	bodyData := []byte(soapBody)
+	req, err := http.NewRequest("POST", endpoint, bytes.NewReader(bodyData))
+	if err != nil {
+		return "", err
+	}
+	req.ContentLength = int64(len(bodyData))
+
+	req.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
+	req.Header.Set("SOAPAction", soapAction)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	return string(body), nil
+}
+
 // extractManufacturerFromName tries to extract manufacturer from device name
 func extractManufacturerFromName(name string) string {
 	if name == "" {
@@ -1120,29 +1222,37 @@ func testWeakCredentials(device *Device) {
 			if isWeakCredential(username, password) {
 				device.AuthStatus = "weak_auth"
 				device.WeakPassword = true
-				fmt.Printf("[WARNING] Weak credentials found: %s for device %s\n", credStr, device.XAddr)
+				conditionalPrintf("[WARNING] Weak credentials found: %s for device %s\n", credStr, device.XAddr)
 			} else {
 				device.AuthStatus = "no_auth"
-				fmt.Printf("[INFO] No authentication required for device %s\n", device.XAddr)
+				conditionalPrintf("[INFO] No authentication required for device %s\n", device.XAddr)
 			}
+			
+			// Now that we have working credentials, get detailed device information
+			conditionalPrintf("[INFO] Fetching detailed device information with authenticated access...\n")
+			tryGetDeviceInformationDetailsAuth(device, username, password)
+			
 			return
 		}
+		
+		// Add small delay between credential attempts to avoid overwhelming devices
+		time.Sleep(200 * time.Millisecond)
 	}
 
 	device.AuthStatus = "auth_required"
-	fmt.Printf("[INFO] All weak credentials failed for %s\n", device.XAddr)
+	conditionalPrintf("[INFO] All weak credentials failed for %s\n", device.XAddr)
 }
 
 // testAuthentication tests if given credentials work for ONVIF device
 func testAuthentication(xaddr, username, password string) bool {
 	// Add debug logging for credential testing
 	credStr := fmt.Sprintf("%s:%s", username, password)
-	
+
 	// Create digest transport with credentials
 	transport := onvifDigest.NewTransport(username, password)
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   5 * time.Second,
+		Timeout:   10 * time.Second, // Increased timeout for slow devices
 	}
 
 	// Create GetDeviceInformation SOAP request
@@ -1153,36 +1263,39 @@ func testAuthentication(xaddr, username, password string) bool {
 	</s:Body>
 </s:Envelope>`
 
-	req, err := http.NewRequest("POST", xaddr, strings.NewReader(soapRequest))
+	// Create request with body that can be reused for digest auth
+	bodyData := []byte(soapRequest)
+	req, err := http.NewRequest("POST", xaddr, bytes.NewReader(bodyData))
 	if err != nil {
-		fmt.Printf("[DEBUG] Failed to create request for %s: %v\n", credStr, err)
+		conditionalPrintf("[DEBUG] Failed to create request for %s: %v\n", credStr, err)
 		return false
 	}
+	req.ContentLength = int64(len(bodyData))
 
 	// Debug: log SOAP request length
-	fmt.Printf("[DEBUG] SOAP request length for %s: %d bytes\n", credStr, len(soapRequest))
+	conditionalPrintf("[DEBUG] SOAP request length for %s: %d bytes\n", credStr, len(soapRequest))
 
 	req.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
 	req.Header.Set("SOAPAction", "")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Printf("[DEBUG] HTTP request failed for %s: %v\n", credStr, err)
+		conditionalPrintf("[DEBUG] HTTP request failed for %s: %v\n", credStr, err)
 		return false
 	}
 	defer resp.Body.Close()
 
 	// Log the response for debugging
-	fmt.Printf("[DEBUG] Credential %s returned HTTP %d\n", credStr, resp.StatusCode)
-	
+	conditionalPrintf("[DEBUG] Credential %s returned HTTP %d\n", credStr, resp.StatusCode)
+
 	// If we get a 401, it means credentials are wrong
 	// If we get a 200, credentials worked
 	// Other status codes might indicate other issues
 	if resp.StatusCode == 401 {
-		fmt.Printf("[DEBUG] Authentication failed (401) for %s\n", credStr)
+		conditionalPrintf("[DEBUG] Authentication failed (401) for %s\n", credStr)
 		return false
 	} else if resp.StatusCode == 200 {
-		fmt.Printf("[SUCCESS] Authentication succeeded for %s\n", credStr)
+		conditionalPrintf("[SUCCESS] Authentication succeeded for %s\n", credStr)
 		return true
 	} else {
 		// Log other response codes for debugging
@@ -1191,7 +1304,7 @@ func testAuthentication(xaddr, username, password string) bool {
 		if len(body) < maxLen {
 			maxLen = len(body)
 		}
-		fmt.Printf("[DEBUG] Unexpected response %d for %s, body: %s\n", resp.StatusCode, credStr, string(body[:maxLen]))
+		conditionalPrintf("[DEBUG] Unexpected response %d for %s, body: %s\n", resp.StatusCode, credStr, string(body[:maxLen]))
 		return resp.StatusCode == 200
 	}
 }
@@ -1208,14 +1321,9 @@ func isWeakCredential(username, password string) bool {
 		return true
 	}
 
-	// Common weak passwords
-	weakPasswords := []string{
-		"123456", "12345", "password", "admin", "111111", "000000",
-		"888888", "9999", "1234", "admin123",
-	}
-
-	for _, weak := range weakPasswords {
-		if password == weak {
+	// Check if this combination is in our weak credentials list
+	for _, creds := range weakCredentials {
+		if creds[0] == username && creds[1] == password {
 			return true
 		}
 	}
@@ -1228,16 +1336,142 @@ func isWeakCredential(username, password string) bool {
 	return false
 }
 
+// retryOnvifWithRTSPCreds attempts ONVIF authentication using RTSP credentials
+func retryOnvifWithRTSPCreds(device *Device) {
+	if device.XAddr == "" || device.RTSPWorkingCreds == "" {
+		return
+	}
+	
+	// Parse RTSP credentials
+	parts := strings.Split(device.RTSPWorkingCreds, ":")
+	if len(parts) != 2 {
+		return
+	}
+	username := parts[0]
+	password := parts[1]
+	
+	// Test ONVIF authentication with RTSP credentials
+	if testAuthentication(device.XAddr, username, password) {
+		device.User = username
+		device.Password = password
+		device.WorkingCreds = device.RTSPWorkingCreds
+		
+		if isWeakCredential(username, password) {
+			device.AuthStatus = "weak_auth"
+			device.WeakPassword = true
+			conditionalPrintf("[SUCCESS] ONVIF authentication succeeded with RTSP credentials: %s for device %s\n", device.RTSPWorkingCreds, device.XAddr)
+		} else {
+			device.AuthStatus = "no_auth"
+			conditionalPrintf("[SUCCESS] ONVIF no authentication required (verified with RTSP creds) for device %s\n", device.XAddr)
+		}
+		
+		// Now that we have working ONVIF credentials, try to get more detailed device information
+		conditionalPrintf("[INFO] Fetching detailed device information with authenticated access...\n")
+		tryGetDeviceInformationDetailsAuth(device, username, password)
+		// For now, just try the regular versions since we have working credentials
+		// TODO: Implement authenticated versions if needed
+		tryGetRawScopes(device)
+		tryGetMACAddress(device)
+		tryGetHostname(device)
+	}
+}
+
+// handleCredentialSharing handles bidirectional credential sharing between ONVIF and RTSP
+func handleCredentialSharing(device *Device) {
+	// Case 1: ONVIF found credentials, RTSP needs testing
+	if device.WorkingCreds != "" && device.RTSPAuthStatus == "unknown" {
+		conditionalPrintf("[INFO] Testing RTSP with ONVIF credentials: %s\n", device.WorkingCreds)
+		retryRTSPWithOnvifCreds(device)
+	}
+	
+	// Case 2: RTSP found credentials, ONVIF needs authentication  
+	if device.RTSPWorkingCreds != "" && device.AuthStatus == "auth_required" {
+		conditionalPrintf("[INFO] Retrying ONVIF authentication with RTSP credentials: %s\n", device.RTSPWorkingCreds)
+		retryOnvifWithRTSPCreds(device)
+	}
+	
+	// Case 3: Both protocols found different credentials - log for analysis
+	if device.WorkingCreds != "" && device.RTSPWorkingCreds != "" && device.WorkingCreds != device.RTSPWorkingCreds {
+		conditionalPrintf("[INFO] Different credentials found - ONVIF: %s, RTSP: %s\n", device.WorkingCreds, device.RTSPWorkingCreds)
+	}
+}
+
+// retryRTSPWithOnvifCreds attempts RTSP authentication using ONVIF credentials
+func retryRTSPWithOnvifCreds(device *Device) {
+	if device.WorkingCreds == "" || device.IP == "" {
+		return
+	}
+	
+	// Parse ONVIF credentials
+	parts := strings.Split(device.WorkingCreds, ":")
+	if len(parts) != 2 {
+		return
+	}
+	username := parts[0]
+	password := parts[1]
+	
+	// Test common RTSP ports with ONVIF credentials
+	rtspPorts := []int{554, 8554, 1935, 8935}
+	
+	for _, port := range rtspPorts {
+		// Quick TCP connection test first
+		address := fmt.Sprintf("%s:%d", device.IP, port)
+		conn, err := net.DialTimeout("tcp", address, 2*time.Second)
+		if err != nil {
+			continue
+		}
+		conn.Close()
+		
+		// Test RTSP authentication with ONVIF credentials
+		streamPaths := []string{
+			"/", "/live", "/stream", "/stream1", "/stream2",
+			"/ch01", "/ch1", "/channel1", "/main", "/sub",
+			"/cam/realmonitor?channel=1&subtype=0",  // Dahua format
+			"/Streaming/Channels/101",               // Hikvision format
+		}
+		
+		if workingStreams := testRTSPCredentials(device.IP, port, username, password, streamPaths); len(workingStreams) > 0 {
+			device.RTSPWorkingCreds = device.WorkingCreds
+			device.RTSPStreams = workingStreams
+			
+			if isWeakCredential(username, password) {
+				device.RTSPAuthStatus = "weak_auth"
+				device.RTSPWeakPassword = true
+				conditionalPrintf("[SUCCESS] RTSP authentication succeeded with ONVIF credentials: %s for %s:%d\n", device.WorkingCreds, device.IP, port)
+				conditionalPrintf("[SUCCESS] Accessible RTSP streams: %v\n", workingStreams)
+			} else {
+				device.RTSPAuthStatus = "no_auth"
+				conditionalPrintf("[SUCCESS] RTSP no authentication required (verified with ONVIF creds) for %s:%d\n", device.IP, port)
+			}
+			
+			// Mark RTSP capability and service
+			if device.Capabilities == nil {
+				device.Capabilities = make(map[string]bool)
+			}
+			if device.Services == nil {
+				device.Services = make(map[string]string)
+			}
+			device.Capabilities["RTSP"] = true
+			device.Services["RTSP"] = fmt.Sprintf("rtsp://%s:%d", device.IP, port)
+			
+			return // Found working RTSP, no need to test other ports
+		}
+	}
+	
+	// If we reach here, ONVIF credentials didn't work for RTSP
+	conditionalPrintf("[INFO] ONVIF credentials did not work for RTSP authentication on %s\n", device.IP)
+}
+
 // testRTSPOnDiscoveredDevice tests RTSP capabilities on an already discovered ONVIF device
 func testRTSPOnDiscoveredDevice(device *Device) {
 	// Initialize RTSP security fields
 	device.RTSPAuthStatus = "unknown"
 	device.RTSPWeakPassword = false
 	device.RTSPStreams = []string{}
-	
+
 	// Test common RTSP ports on this device
 	rtspPorts := []int{554, 8554, 1935, 8935}
-	
+
 	for _, port := range rtspPorts {
 		// Quick TCP connection test
 		address := fmt.Sprintf("%s:%d", device.IP, port)
@@ -1246,11 +1480,11 @@ func testRTSPOnDiscoveredDevice(device *Device) {
 			continue
 		}
 		conn.Close()
-		
+
 		// Found RTSP port, test authentication
-		fmt.Printf("[INFO] Found RTSP service on %s:%d, testing authentication...\n", device.IP, port)
+		//fmt.Printf("[INFO] Found RTSP service on %s:%d, testing authentication...\n", device.IP, port)
 		testRTSPAuthentication(device, device.IP, port)
-		
+
 		// Mark RTSP capability
 		if device.Capabilities == nil {
 			device.Capabilities = make(map[string]bool)
@@ -1260,7 +1494,7 @@ func testRTSPOnDiscoveredDevice(device *Device) {
 		}
 		device.Capabilities["RTSP"] = true
 		device.Services["RTSP"] = fmt.Sprintf("rtsp://%s:%d", device.IP, port)
-		
+
 		// Found RTSP, no need to test other ports
 		break
 	}
@@ -1268,7 +1502,7 @@ func testRTSPOnDiscoveredDevice(device *Device) {
 
 // discoverRTSPDevices performs RTSP-based device discovery
 func discoverRTSPDevices(cidr string, timeout time.Duration) ([]Device, error) {
-	fmt.Printf("[INFO] Starting RTSP device discovery on %s\n", cidr)
+	conditionalPrintf("[INFO] Starting RTSP device discovery on %s\n", cidr)
 
 	_, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
@@ -1320,7 +1554,7 @@ func scanRTSPDevice(ip string, timeout time.Duration) (Device, bool) {
 
 		// Try RTSP handshake
 		if device, found := detectRTSPDevice(ip, port, timeout/5); found {
-			fmt.Printf("[SUCCESS] Found RTSP device: %s at %s:%d\n", device.Name, ip, port)
+			conditionalPrintf("[SUCCESS] Found RTSP device: %s at %s:%d\n", device.Name, ip, port)
 			return device, true
 		}
 	}
@@ -1472,7 +1706,7 @@ func testHTTPEndpoint(url string, timeout time.Duration) bool {
 
 // discoverHTTPDevices performs HTTP fingerprinting for device discovery
 func discoverHTTPDevices(cidr string, timeout time.Duration) ([]Device, error) {
-	fmt.Printf("[INFO] Starting HTTP fingerprinting discovery on %s\n", cidr)
+	conditionalPrintf("[INFO] Starting HTTP fingerprinting discovery on %s\n", cidr)
 
 	_, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
@@ -1521,7 +1755,7 @@ func scanHTTPFingerprint(ip string, ports []int, timeout time.Duration) (Device,
 
 		for _, scheme := range schemes {
 			if device, found := fingerprintHTTPDevice(ip, port, scheme, timeout/10); found {
-				fmt.Printf("[SUCCESS] Found HTTP device: %s at %s://%s:%d\n", device.Name, scheme, ip, port)
+				conditionalPrintf("[SUCCESS] Found HTTP device: %s at %s://%s:%d\n", device.Name, scheme, ip, port)
 				return device, true
 			}
 		}
@@ -1694,7 +1928,7 @@ func analyzeHTTPResponse(ip string, port int, scheme string, resp *http.Response
 
 // discoverUPnPDevices performs UPnP device discovery via SSDP
 func discoverUPnPDevices(timeout time.Duration) ([]Device, error) {
-	fmt.Printf("[INFO] Starting UPnP/SSDP device discovery...\n")
+	conditionalPrintf("[INFO] Starting UPnP/SSDP device discovery...\n")
 
 	var devices []Device
 	var mu sync.Mutex
@@ -1989,11 +2223,11 @@ func enhanceDeviceFromUPnPDescription(device *Device, description string) {
 
 // testRTSPAuthentication tests RTSP authentication with weak credentials
 func testRTSPAuthentication(device *Device, ip string, port int) {
-	fmt.Printf("[RTSP-SECURITY] Testing RTSP authentication for %s:%d...\n", ip, port)
+	//fmt.Printf("[RTSP-SECURITY] Testing RTSP authentication for %s:%d...\n", ip, port)
 
 	// Get all credentials (built-in + custom)
 	allCredentials := getAllCredentials()
-	fmt.Printf("[RTSP-SECURITY] Testing %d credential combinations for RTSP...\n", len(allCredentials))
+	//fmt.Printf("[RTSP-SECURITY] Testing %d credential combinations for RTSP...\n", len(allCredentials))
 
 	// Common RTSP stream paths to test
 	streamPaths := []string{
@@ -2027,7 +2261,7 @@ func testRTSPAuthentication(device *Device, ip string, port int) {
 
 		credStr := fmt.Sprintf("%s:%s", username, password)
 
-		fmt.Printf("[RTSP-SECURITY] Trying RTSP credentials: %s\n", credStr)
+		//fmt.Printf("[RTSP-SECURITY] Trying RTSP credentials: %s\n", credStr)
 
 		// Test authentication with different stream paths
 		if workingStreams := testRTSPCredentials(ip, port, username, password, streamPaths); len(workingStreams) > 0 {
@@ -2037,19 +2271,19 @@ func testRTSPAuthentication(device *Device, ip string, port int) {
 			if isWeakCredential(username, password) {
 				device.RTSPAuthStatus = "weak_auth"
 				device.RTSPWeakPassword = true
-				fmt.Printf("[RTSP-WARNING] Weak RTSP credentials found: %s for %s:%d\n", credStr, ip, port)
-				fmt.Printf("[RTSP-WARNING] Accessible streams: %v\n", workingStreams)
+				conditionalPrintf("[RTSP-WARNING] Weak RTSP credentials found: %s for %s:%d\n", credStr, ip, port)
+				conditionalPrintf("[RTSP-WARNING] Accessible streams: %v\n", workingStreams)
 			} else {
 				device.RTSPAuthStatus = "no_auth"
-				fmt.Printf("[RTSP-INFO] No RTSP authentication required for %s:%d\n", ip, port)
-				fmt.Printf("[RTSP-INFO] Accessible streams: %v\n", workingStreams)
+				conditionalPrintf("[RTSP-INFO] No RTSP authentication required for %s:%d\n", ip, port)
+				conditionalPrintf("[RTSP-INFO] Accessible streams: %v\n", workingStreams)
 			}
 			return
 		}
 	}
 
 	device.RTSPAuthStatus = "auth_required"
-	fmt.Printf("[RTSP-INFO] All weak credentials failed for RTSP %s:%d\n", ip, port)
+	conditionalPrintf("[RTSP-INFO] All weak credentials failed for RTSP %s:%d\n", ip, port)
 }
 
 // testRTSPCredentials tests RTSP credentials against multiple stream paths
