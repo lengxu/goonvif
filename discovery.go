@@ -354,7 +354,14 @@ func detectOnvifByHTTP(ip string, port int, timeout time.Duration) (Device, bool
 
 		if resp.StatusCode == 200 {
 			body, _ := ioutil.ReadAll(resp.Body)
-			if strings.Contains(string(body), "onvif") || strings.Contains(string(body), "ONVIF") {
+			bodyStr := string(body)
+			// More strict ONVIF detection - look for actual ONVIF service responses
+			if (strings.Contains(bodyStr, "onvif") || strings.Contains(bodyStr, "ONVIF")) &&
+				(strings.Contains(bodyStr, "GetCapabilitiesResponse") || 
+				 strings.Contains(bodyStr, "Capabilities") ||
+				 strings.Contains(bodyStr, "tds:GetCapabilities") ||
+				 strings.Contains(bodyStr, "Device") ||
+				 strings.Contains(bodyStr, "XAddr")) {
 				device := Device{
 					ID:    fmt.Sprintf("tcp-detected-%s-%d", ip, port),
 					Name:  ip,
@@ -1685,20 +1692,44 @@ func discoverRTSPDevices(cidr string, timeout time.Duration) ([]Device, error) {
 
 // scanRTSPDevice scans a single IP for RTSP services
 func scanRTSPDevice(ip string, timeout time.Duration) (Device, bool) {
+	fmt.Printf("[DEBUG] scanRTSPDevice called for IP %s with timeout %v\n", ip, timeout)
+	// Add initial delay to prevent overwhelming device immediately after ONVIF scan
+	time.Sleep(200 * time.Millisecond)
+	
 	for _, port := range rtspPorts {
 		address := fmt.Sprintf("%s:%d", ip, port)
+		fmt.Printf("[DEBUG] Testing RTSP port %d on %s\n", port, ip)
+
+		// Use more reasonable timeout - at least 2 seconds for TCP connection
+		tcpTimeout := timeout / 3
+		if tcpTimeout < 2*time.Second {
+			tcpTimeout = 2*time.Second
+		}
 
 		// Test TCP connection to RTSP port
-		conn, err := net.DialTimeout("tcp", address, timeout/10)
+		conn, err := net.DialTimeout("tcp", address, tcpTimeout)
 		if err != nil {
+			fmt.Printf("[DEBUG] TCP connection failed to %s: %v\n", address, err)
 			continue
 		}
 		conn.Close()
+		fmt.Printf("[DEBUG] TCP connection successful to %s\n", address)
 
-		// Try RTSP handshake
-		if device, found := detectRTSPDevice(ip, port, timeout/5); found {
-			conditionalPrintf("[SUCCESS] Found RTSP device: %s at %s:%d\n", device.Name, ip, port)
+		// Add small delay between port tests to be more device-friendly
+		time.Sleep(100 * time.Millisecond)
+
+		// Try RTSP handshake with more reasonable timeout
+		rtspTimeout := timeout / 2
+		if rtspTimeout < 3*time.Second {
+			rtspTimeout = 3*time.Second
+		}
+		
+		fmt.Printf("[DEBUG] Starting RTSP handshake for %s:%d\n", ip, port)
+		if device, found := detectRTSPDevice(ip, port, rtspTimeout); found {
+			fmt.Printf("[SUCCESS] Found RTSP device: %s at %s:%d\n", device.Name, ip, port)
 			return device, true
+		} else {
+			fmt.Printf("[DEBUG] RTSP handshake failed for %s:%d\n", ip, port)
 		}
 	}
 
@@ -1709,36 +1740,121 @@ func scanRTSPDevice(ip string, timeout time.Duration) (Device, bool) {
 func detectRTSPDevice(ip string, port int, timeout time.Duration) (Device, bool) {
 	address := fmt.Sprintf("%s:%d", ip, port)
 
-	// Try RTSP OPTIONS request
-	conn, err := net.DialTimeout("tcp", address, timeout)
+	// Add small delay to prevent overwhelming devices
+	time.Sleep(50 * time.Millisecond)
+
+	// Try RTSP OPTIONS request with minimum 5 second timeout
+	actualTimeout := timeout
+	if actualTimeout < 5*time.Second {
+		actualTimeout = 5*time.Second
+	}
+	
+	conn, err := net.DialTimeout("tcp", address, actualTimeout)
 	if err != nil {
 		return Device{}, false
 	}
 	defer conn.Close()
 
 	// Set read timeout
-	conn.SetReadDeadline(time.Now().Add(timeout))
+	conn.SetReadDeadline(time.Now().Add(actualTimeout))
 
-	// Send RTSP OPTIONS request
-	rtspRequest := fmt.Sprintf("OPTIONS rtsp://%s RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: ONVIF-Scanner/1.0\r\n\r\n", address)
+	// Send RTSP OPTIONS request (use standard media player format)
+	rtspRequest := fmt.Sprintf("OPTIONS rtsp://%s/ RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: VLC/3.0.0 LibVLC/3.0.0\r\nAccept: application/sdp\r\n\r\n", address)
+	fmt.Printf("[DEBUG] Sending RTSP request to %s\n", address)
 
 	_, err = conn.Write([]byte(rtspRequest))
 	if err != nil {
+		fmt.Printf("[DEBUG] Failed to send RTSP request to %s: %v\n", address, err)
 		return Device{}, false
 	}
 
-	// Read response
+	// Read response with retry mechanism for connection resets  
 	buffer := make([]byte, 1024)
+	// Try to read with a more generous timeout first
+	conn.SetReadDeadline(time.Now().Add(actualTimeout + 2*time.Second))
 	n, err := conn.Read(buffer)
 	if err != nil {
-		return Device{}, false
+		// Check if connection was reset/closed by remote host (common defense mechanism)
+		if strings.Contains(err.Error(), "forcibly closed") || 
+		   strings.Contains(err.Error(), "connection reset") ||
+		   (err.Error() == "EOF" && n == 0) { // Only retry if we got no data
+			fmt.Printf("[DEBUG] Connection closed by %s (got %d bytes), trying with longer delay...\n", address, n)
+			conn.Close()
+			
+			// Wait longer before retry (progressive backoff)
+			time.Sleep(3 * time.Second)
+			
+			// Retry with a fresh connection
+			retryConn, retryErr := net.DialTimeout("tcp", address, actualTimeout)
+			if retryErr != nil {
+				fmt.Printf("[DEBUG] Retry connection failed to %s: %v\n", address, retryErr)
+				return Device{}, false
+			}
+			defer retryConn.Close()
+			retryConn.SetReadDeadline(time.Now().Add(actualTimeout))
+			
+			// Send a more complete and standard RTSP request
+			friendlyRequest := fmt.Sprintf("OPTIONS rtsp://%s/ RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: VLC media player\r\nAccept: application/sdp\r\n\r\n", address)
+			fmt.Printf("[DEBUG] Retrying with standard RTSP request to %s\n", address)
+			
+			_, retryErr = retryConn.Write([]byte(friendlyRequest))
+			if retryErr != nil {
+				fmt.Printf("[DEBUG] Failed to send retry RTSP request to %s: %v\n", address, retryErr)
+				return Device{}, false
+			}
+			
+			// Try to read response again with multiple attempts
+			var totalBytes int
+			for attempts := 0; attempts < 3; attempts++ {
+				retryConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+				n, err = retryConn.Read(buffer[totalBytes:])
+				if err != nil {
+					if err.Error() == "EOF" && totalBytes > 0 {
+						// Got some data before EOF, this might be complete
+						n = totalBytes
+						err = nil
+						break
+					}
+					if attempts == 2 { // Last attempt
+						fmt.Printf("[DEBUG] Retry failed to read RTSP response from %s after %d attempts: %v\n", address, attempts+1, err)
+						return Device{}, false
+					}
+					time.Sleep(200 * time.Millisecond) // Short delay between read attempts
+					continue
+				}
+				totalBytes += n
+				if totalBytes > 0 && (strings.Contains(string(buffer[:totalBytes]), "\r\n\r\n") || 
+				                     strings.Contains(string(buffer[:totalBytes]), "RTSP/1.0")) {
+					// Got what looks like a complete RTSP response
+					n = totalBytes
+					break
+				}
+			}
+			conn = retryConn // Use retry connection for remaining code
+		} else if err.Error() == "EOF" && n > 0 {
+			// EOF with data - this is actually normal for some RTSP servers
+			fmt.Printf("[DEBUG] Got EOF with %d bytes of data from %s, continuing...\n", n, address)
+			// Continue processing with the data we got
+		} else {
+			fmt.Printf("[DEBUG] Failed to read RTSP response from %s: %v\n", address, err)
+			return Device{}, false
+		}
 	}
 
 	response := string(buffer[:n])
+	fmt.Printf("[DEBUG] RTSP response from %s: %q\n", address, response)
 
-	// Check if it's a valid RTSP response
-	if !strings.HasPrefix(response, "RTSP/1.0") {
+	// Check if it's a valid RTSP response (be more flexible)
+	if !strings.HasPrefix(response, "RTSP/1.0") && !strings.Contains(response, "RTSP") {
+		fmt.Printf("[DEBUG] Invalid RTSP response from %s: %q\n", address, response)
 		return Device{}, false
+	}
+	
+	// Even if we get an error response, if it contains RTSP, it means there's an RTSP server
+	if strings.Contains(response, "401") || strings.Contains(response, "403") || strings.Contains(response, "200") {
+		fmt.Printf("[DEBUG] RTSP server detected at %s (status in response: %q)\n", address, response)
+	} else {
+		fmt.Printf("[DEBUG] Valid RTSP response received from %s\n", address)
 	}
 
 	// Create device entry
@@ -1773,8 +1889,10 @@ func detectRTSPDevice(ip string, port int, timeout time.Duration) (Device, bool)
 	device.RTSPWeakPassword = false
 	device.RTSPStreams = []string{}
 
-	// Test RTSP authentication
+	// Test RTSP authentication (with timeout to avoid hanging)
+	fmt.Printf("[DEBUG] Starting RTSP authentication test for %s:%d\n", ip, port)
 	testRTSPAuthentication(&device, ip, port)
+	fmt.Printf("[DEBUG] RTSP authentication test completed for %s:%d\n", ip, port)
 
 	// Try to detect if this is likely an ONVIF device too
 	if isLikelyONVIFDevice(response) {
@@ -2466,15 +2584,18 @@ func testRTSPStream(streamURL, username, password string) bool {
 		hostPort = urlPart
 	}
 
-	// Connect to RTSP server
-	conn, err := net.DialTimeout("tcp", hostPort, 3*time.Second)
+	// Add small delay to prevent overwhelming devices with rapid connections
+	time.Sleep(100 * time.Millisecond)
+
+	// Connect to RTSP server with increased timeout
+	conn, err := net.DialTimeout("tcp", hostPort, 5*time.Second)
 	if err != nil {
 		return false
 	}
 	defer conn.Close()
 
 	// Set read timeout
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(8 * time.Second))
 
 	// Send RTSP DESCRIBE request
 	var request string

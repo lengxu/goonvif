@@ -2,6 +2,7 @@ package onvif
 
 import (
 	"encoding/json"
+	"fmt"
 	"github.com/golang/glog"
 	"net"
 	"strings"
@@ -49,18 +50,41 @@ func DiscoveryDeviceByIp(ip string, duration int) string {
 		}
 		result.Data = devices
 	} else {
-		// Handle single IP discovery - for cross-network IPs, use TCP scanning only
+		// Handle single IP discovery - try both ONVIF and RTSP discovery in parallel
 		var allDevices []Device
 		
-		// First try TCP scanning (works for cross-network)
-		tcpDevice, found := scanOnvifDevice(ip, time.Duration(duration)*time.Millisecond)
-		if found {
+		// Try ONVIF discovery first (works for cross-network)
+		tcpDevice, onvifFound := scanOnvifDevice(ip, time.Duration(duration)*time.Millisecond)
+		if onvifFound {
 			allDevices = append(allDevices, tcpDevice)
-		} else {
-			// If no ONVIF found, try RTSP-only discovery
-			rtspDevice, rtspFound := scanRTSPDevice(ip, time.Duration(duration)*time.Millisecond)
-			if rtspFound {
+		}
+		
+		// Always try RTSP discovery regardless of ONVIF result
+		// This fixes the issue where RTSP devices are missed on second scan
+		fmt.Printf("[DEBUG] Starting RTSP scan for %s (ONVIF found: %v)\n", ip, onvifFound)
+		rtspDevice, rtspFound := scanRTSPDevice(ip, time.Duration(duration)*time.Millisecond)
+		fmt.Printf("[DEBUG] RTSP scan completed for %s (RTSP found: %v)\n", ip, rtspFound)
+		if rtspFound {
+			// Check if this is the same device (same IP) to avoid duplicates
+			if !onvifFound || rtspDevice.IP != tcpDevice.IP {
 				allDevices = append(allDevices, rtspDevice)
+			} else {
+				// If same device, merge RTSP capabilities into ONVIF device
+				if tcpDevice.Capabilities == nil {
+					tcpDevice.Capabilities = make(map[string]bool)
+				}
+				if tcpDevice.Services == nil {
+					tcpDevice.Services = make(map[string]string)
+				}
+				tcpDevice.Capabilities["RTSP"] = true
+				tcpDevice.Services["RTSP"] = rtspDevice.Services["RTSP"]
+				// Copy RTSP authentication info
+				tcpDevice.RTSPAuthStatus = rtspDevice.RTSPAuthStatus
+				tcpDevice.RTSPWeakPassword = rtspDevice.RTSPWeakPassword
+				tcpDevice.RTSPWorkingCreds = rtspDevice.RTSPWorkingCreds
+				tcpDevice.RTSPStreams = rtspDevice.RTSPStreams
+				// Update the device in the array
+				allDevices[0] = tcpDevice
 			}
 		}
 		
