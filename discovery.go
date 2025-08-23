@@ -1275,7 +1275,8 @@ func enhanceDeviceInfoCrossNetwork(device *Device, ip string, port int) {
 		if device.Model != "" {
 			device.Name = fmt.Sprintf("%s %s", device.Manufacturer, device.Model)
 		} else {
-			device.Name = fmt.Sprintf(ip)
+			//device.Name = fmt.Sprintf(ip)
+			device.Name = ip
 		}
 	}
 }
@@ -1742,7 +1743,8 @@ func detectRTSPDevice(ip string, port int, timeout time.Duration) (Device, bool)
 
 	// Create device entry
 	device := Device{
-		Name:         fmt.Sprintf("RTSP Device (%s:%d)", ip, port),
+		//Name:         fmt.Sprintf("RTSP Device (%s:%d)", ip, port),
+		Name:         ip,
 		IP:           ip,
 		Port:         port,
 		XAddr:        fmt.Sprintf("rtsp://%s:%d", ip, port),
