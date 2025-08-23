@@ -231,6 +231,13 @@ func LocalNetworkDiscovery(cidr string, duration time.Duration) ([]Device, error
 		enhanceDeviceInfo(&devices[i])
 	}
 
+	// Also discover RTSP-only devices in the same network
+	rtspDevices, _ := discoverRTSPDevices(cidr, duration)
+	if len(rtspDevices) > 0 {
+		// Merge RTSP-only devices (avoid duplicates)
+		devices = mergeDeviceLists(devices, rtspDevices)
+	}
+
 	return devices, nil
 }
 
@@ -259,11 +266,20 @@ func CrossNetworkDiscovery(cidr string, duration time.Duration) ([]Device, error
 			sem <- struct{}{}        // Acquire semaphore
 			defer func() { <-sem }() // Release semaphore
 
+			// Try ONVIF discovery first
 			device, found := scanOnvifDevice(ipAddr, duration)
 			if found {
 				mu.Lock()
 				allDevices = append(allDevices, device)
 				mu.Unlock()
+			} else {
+				// If no ONVIF found, try RTSP-only discovery
+				rtspDevice, rtspFound := scanRTSPDevice(ipAddr, duration)
+				if rtspFound {
+					mu.Lock()
+					allDevices = append(allDevices, rtspDevice)
+					mu.Unlock()
+				}
 			}
 		}(ip.String())
 	}
@@ -771,6 +787,26 @@ func removeDuplicateDevices(devices []Device) []Device {
 	}
 
 	return result
+}
+
+// mergeDeviceLists merges two device lists, avoiding duplicates based on IP address
+func mergeDeviceLists(primary []Device, secondary []Device) []Device {
+	// Create a map of existing devices by IP
+	existingIPs := make(map[string]bool)
+	for _, device := range primary {
+		if device.IP != "" {
+			existingIPs[device.IP] = true
+		}
+	}
+
+	// Add secondary devices that don't exist in primary
+	for _, device := range secondary {
+		if device.IP != "" && !existingIPs[device.IP] {
+			primary = append(primary, device)
+		}
+	}
+
+	return primary
 }
 
 func enhanceDeviceInfo(device *Device) {

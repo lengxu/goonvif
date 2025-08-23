@@ -56,6 +56,12 @@ func DiscoveryDeviceByIp(ip string, duration int) string {
 		tcpDevice, found := scanOnvifDevice(ip, time.Duration(duration)*time.Millisecond)
 		if found {
 			allDevices = append(allDevices, tcpDevice)
+		} else {
+			// If no ONVIF found, try RTSP-only discovery
+			rtspDevice, rtspFound := scanRTSPDevice(ip, time.Duration(duration)*time.Millisecond)
+			if rtspFound {
+				allDevices = append(allDevices, rtspDevice)
+			}
 		}
 		
 		// Skip WS-Discovery for cross-network discovery to avoid binding issues
