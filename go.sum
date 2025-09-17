@@ -6,5 +6,5 @@ github.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=
 github.com/google/go-cmp v0.6.0/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=
 github.com/google/uuid v1.2.0 h1:qJYtXnJRWmpe7m/3XlyhrsLrEURqHRM2kxzoxXqyUDs=
 github.com/google/uuid v1.2.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
-github.com/lengxu/golicense v0.0.1 h1:K1ohCbSDygK2HohRLlujQbSRaens0d/tIR2HfMTGnls=
-github.com/lengxu/golicense v0.0.1/go.mod h1:ZfH5VsmQjVO+AEdep/Ugo99tWo3x1yfjDcriLfJothY=
+github.com/lengxu/golicense v0.0.3 h1:DnwaVm9G5YOM3m3Umc/4DsuNMzhkf/vnhkw4jWVKMho=
+github.com/lengxu/golicense v0.0.3/go.mod h1:ZfH5VsmQjVO+AEdep/Ugo99tWo3x1yfjDcriLfJothY=
